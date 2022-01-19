@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+
+import optparse
+import requests
+import json
+import sys
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+class Status:
+    errors = {
+        'OK':        0,
+        'WARNING':   1,
+        'CRITICAL':  2,
+        'UNKNOWN':   3,
+        'DEPENDENT': 4,
+    };
+
+    def __init__(self):
+        self.current_status = 'OK'
+        self.status_message = 'Everything is fine'
+
+    def set_status(self,new_status='OK'):
+        if (self.errors[new_status] > self.errors[self.current_status]):
+            self.current_status = new_status
+
+    def set_status_message(self,new_status_message='Everything is fine'):
+        self.status_message = new_status_message
+
+    def get_status(self):
+        return self.current_status
+
+    def get_status_code(self):
+        return self.errors[self.current_status]
+
+    def get_status_message(self):
+        return self.current_status + " - " + self.status_message
+
+def exit_with_status(the_status):
+  print(the_status.get_status_message())
+  sys.exit(the_status.get_status_code())
+
+def rm_login(the_status, the_url, passwd, ssl_check=False):
+  the_url = the_url + "/auth/login"
+  payload = {'pwd': passwd, 'remember': True}
+
+  try:
+    resp = requests.post(the_url, json=payload, verify=ssl_check)
+  except requests.exceptions.ConnectionError:
+    the_status.set_status('CRITICAL')
+    the_status.set_status_message('Connection error when trying to log in!')
+    exit_with_status(the_status)
+
+  if resp.status_code != 200:
+    the_status.set_status('CRITICAL')
+    status_message = 'Authentication error, response code ' + str(resp.status_code)
+    the_status.set_status_message(status_message)
+    exit_with_status(the_status)
+
+  the_json = resp.json()
+  return the_json['access_token']
+
+def rm_check_update(the_status, the_url, token, ssl_check=False):
+  the_url = the_url + "/machine/update/check" + "?access_token=" + token
+
+  try:
+    resp = requests.post(the_url, verify=ssl_check)
+  except requests.exceptions.ConnectionError:
+    the_status.set_status('CRITICAL')
+    the_status.set_status_message('Connection error when trying to check for updates!')
+    exit_with_status(the_status)
+
+  if resp.status_code != 200:
+    the_status.set_status('CRITICAL')
+    status_message = 'Update check failed, response code ' + str(resp.status_code)
+    the_status.set_status_message(status_message)
+    exit_with_status(the_status)
+
+def rm_update_status(the_status, the_url, token, ssl_check=False):
+  the_url = the_url + "/machine/update" + "?access_token=" + token
+
+  try:
+    resp = requests.get(the_url, verify=ssl_check)
+  except requests.exceptions.ConnectionError:
+    the_status.set_status('CRITICAL')
+    the_status.set_status_message('Connection error when trying to check for updates!')
+    exit_with_status(the_status)
+
+  if resp.status_code != 200:
+    the_status.set_status('CRITICAL')
+    status_message = 'Update check failed, response code ' + str(resp.status_code)
+    the_status.set_status_message(status_message)
+    exit_with_status(the_status)
+
+  the_json = resp.json()
+  return the_json['update']
+
+def main(argv):
+  p = optparse.OptionParser(conflict_handler="resolve",
+                            description="This Nagios plugin checks the health of a RainMachine irrigation controller.")
+  p.add_option('-H', '--host', action='store', type='string', dest='host', default='127.0.0.1', help='The hostname/IP of the RainMachine')
+  p.add_option('-p', '--pass', action='store', type='string', dest='passwd', default='', help='The password to use')
+  p.add_option('--ssl_check', action='store_true', dest='ssl_check', default=False, help="Verify SSL/TLS certificates")
+
+  options,arguments = p.parse_args()
+
+  the_status = Status()
+
+  if not options.ssl_check:
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+  if options.passwd == '':
+    the_status.set_status('CRITICAL')
+    the_status.set_status_message('password not supplied')
+    exit_with_status(the_status)
+
+  api_url = "https://" + options.host + ":8080/api/4"
+
+  token = rm_login(the_status, api_url, options.passwd, options.ssl_check)
+  rm_check_update(the_status, api_url, token, options.ssl_check)
+  updates = rm_update_status(the_status, api_url, token, options.ssl_check)
+
+  if updates:
+    the_status.set_status('CRITICAL')
+    the_status.set_status_message('updates available')
+
+  exit_with_status(the_status)
+
+#
+# Entry point
+#
+if __name__ == "__main__":
+  sys.exit(main(sys.argv[1:]))
